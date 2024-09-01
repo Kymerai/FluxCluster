@@ -1,7 +1,9 @@
 # Copyright (c) 2024 Kyle Marquis
 # Licensed under the MIT License. See the LICENSE file in the project root for license information.
-# Developed as an extension from textbook Fundamentals of Heat and Mass Transfer 7th Ed, 
-# Bergman and Lavine, Ch 4, 2D SS Conduction, Page 243 Section 4.4.3 The Energy Balance Method 
+
+# Developed as an extension of an example from textbook Fundamentals of Heat and Mass Transfer 7th Ed, 
+# Bergman and Lavine, Ch 4, 2D SS Conduction, Page 243 Section 4.4.3 The Energy Balance Method. 
+# This tool enables rectilinear 2D heat conduction problems to be solved with custom grid sizes, and varying boundary conditions.
 
 # NOTES ON PIP INSTALLING PACKAGES
 # Note for self, to activate the virtual environment in the (falsely named) Command Prompt which Spyder calls Terminal 
