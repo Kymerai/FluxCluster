@@ -1,4 +1,4 @@
-Previously used this
+Previously used this, and was stable
 Spyder IDE 5.4.5
 	Standalone
 	Python 3.8.10 64 bit

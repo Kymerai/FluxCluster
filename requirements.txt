@@ -1,4 +1,3 @@
-adjustText==1.1.1
 adjustText==1.2.0
 matplotlib==3.7.1
 numpy==1.24.2
