@@ -1,0 +1,7 @@
+Previously used this
+Spyder IDE 5.4.5
+	Standalone
+	Python 3.8.10 64 bit
+	Qt 5.15.2
+	PyQt5 5.15.9
+	Windows 10 (AMD64)
