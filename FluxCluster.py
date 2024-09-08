@@ -71,7 +71,7 @@ def setUserInput():
         'customstyle' : 'default',
         'subtitle' : 'Example chip with 600 W heat source',
         'decimals_temp' : 2, # this many decimal places in deg C
-        'showinbrowser' : 1, 
+        'showinbrowser' : 0, 
         }
     depth = 0.050 # [m] depth into the page. Default is 1.0 m
     # changing depth will impact calc of heat flux if specifying heat, or calc of heat if specifying flux, impacts temp
@@ -128,6 +128,8 @@ from scipy.sparse import csr_matrix
 # from scipy.sparse import find
 from scipy.sparse.linalg import spsolve # for testing sparse solving debug
 # from scipy.linalg import solve_banded # Used to efficiently solve a banded triangular matrix
+# from scipy.interpolate import interp2d # for resampling evenly spaced grid for heat flux  - no longer used
+from scipy.interpolate import RegularGridInterpolator # for resampling evenly spaced grid for heat flux lines
 from matplotlib.collections import PatchCollection # Used to collect rectangles to plot at once to save time
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches # used for filling colors
@@ -135,7 +137,7 @@ from matplotlib.ticker import FuncFormatter # used for changing units shown on a
 import matplotlib # used for changing font
 from matplotlib import patheffects # Adds useful shadowing around text for readability
 from math import copysign
-from scipy.interpolate import interp2d # for resampling evenly spaced grid for heat flux lines
+
 
 class LayerClass:
     """
@@ -2067,6 +2069,149 @@ def unpack_solution():
     Outputs T_full, qx, qy for each node
     """
     
+def calc_fluxlines_and_vecs():
+    
+    
+    # Example Grid
+    N, M = 200, 100 
+    x_st = np.linspace(0, 1, N)
+    y_st = np.linspace(0, 0.9, M)
+    x_grid, y_grid = np.meshgrid(x_st, y_st)
+    xpos = x_grid[0,:]
+    ypos = y_grid[:,0]
+    T = -np.sin(np.pi * x_grid) * np.sin(np.pi * y_grid) # Example temperature data
+
+    def closesttwo(targ_pt, list_vals):
+        """ Takes target value, and list of values, and finds closest two indices"""
+        compared_val = list_vals>targ_pt
+        if np.any(compared_val):
+            if np.all(compared_val):
+                idx_low_val = 0 # if target less than all, set as 0th index
+            else:
+                idx_low_val = np.argmax(compared_val)-1 # nominally take prev element before one higher than target
+        else:
+            idx_low_val = len(list_vals)-2 # if target greater or equal than all, set as 2nd last index
+        idx_high_val = idx_low_val+1
+        return [idx_low_val, idx_high_val]
+
+    def bilin_interp_4p(pt_x, pt_y, xpair, ypair, f_xy):
+        a = 1 /((xpair[1] - xpair[0]) * (ypair[1] - ypair[0]))
+        xx = np.array([[xpair[1]-pt_x],[pt_x-xpair[0]]],dtype='float32')
+        f = np.array(f_xy).reshape(2,2)
+        yy = np.array([[ypair[1]-pt_y],[pt_y-ypair[0]]],dtype='float32')
+        b = np.matmul(f,yy).flatten()
+        return a * np.matmul(xx.T, b)
+
+    def compressfield(fielddata):
+        np.array(fielddata) # convert if possible to array
+        return np.multiply(np.log(abs(fielddata)+1),np.sign(fielddata)) #compresses large magnitudes more, and keeps sign
+
+    def eulerstream(fieldx, fieldy, xlist, ylist, pt_x_init, pt_y_init, step):    
+        x_lim = (min(xlist), max(xlist))
+        y_lim = (min(ylist), max(ylist))
+        pt_x = float(pt_x_init)
+        pt_y = float(pt_y_init)
+        point_list_x = []
+        point_list_y = []
+        while True: # Generate points for forwards spacial stepping, stop when reach bounds or too many iters
+            point_list_x.append(pt_x)
+            point_list_y.append(pt_y)
+            [idx_low_x, idx_high_x] = closesttwo(pt_x, xlist) #gets indices on selected trace points
+            [idx_low_y, idx_high_y] = closesttwo(pt_y, ylist) #gets indices on selected trace points
+            print(f'{idx_low_x=}') # for debug
+            print(f'{idx_high_x=}') # for debug
+            print(f'{idx_low_y=}') # for debug
+            print(f'{idx_high_y=}') # for debug
+            fieldx_targ = bilin_interp_4p(pt_x, pt_y, [xlist[idx_low_x], xlist[idx_high_x]], [ylist[idx_low_y], ylist[idx_high_y]],\
+                                       [fieldx[idx_low_y, idx_high_x], fieldx[idx_high_y,idx_high_x], \
+                                        fieldx[idx_low_y,idx_low_x], fieldx[idx_high_y,idx_low_x]])
+            fieldy_targ = bilin_interp_4p(pt_x, pt_y, [xlist[idx_low_x], xlist[idx_high_x]], [ylist[idx_low_y], ylist[idx_high_y]],\
+                                       [fieldy[idx_low_y, idx_high_x], fieldy[idx_high_y,idx_high_x], \
+                                        fieldy[idx_low_y,idx_low_x], fieldy[idx_high_y,idx_low_x]])
+            print(f'{fieldx_targ=}') # for debug
+            print(f'{fieldy_targ=}') # for debug
+            magnitude = np.sqrt(fieldx_targ ** 2 + fieldy_targ ** 2)
+            ux = fieldx_targ/magnitude # x component of unit vector
+            uy = fieldy_targ/magnitude # y component of unit vector
+            pt_x = float(pt_x + step*ux[0])
+            pt_y = float(pt_y + step*uy[0])
+            if len(point_list_x) > 5000: #TODO set as user param
+                break
+            if pt_x > x_lim[1] or pt_x < x_lim[0] or pt_y > y_lim[1] or pt_y < y_lim[0]:
+                break
+        pt_x = float(pt_x_init)
+        pt_y = float(pt_y_init)
+        point_list_x_backw = []
+        point_list_y_backw = []
+        while True: # Generate points for backwards spacial stepping, stop when reach bounds or too many iters
+            point_list_x_backw.append(pt_x)
+            point_list_y_backw.append(pt_y)
+            [idx_low_x, idx_high_x] = closesttwo(pt_x, xlist)
+            [idx_low_y, idx_high_y] = closesttwo(pt_y, ylist)
+            # print(f'{idx_low_x=}') # for debug
+            # print(f'{idx_high_x=}') # for debug
+            # print(f'{idx_low_y=}') # for debug
+            # print(f'{idx_high_y=}') # for debug
+            fieldx_targ = bilin_interp_4p(pt_x, pt_y, [xlist[idx_low_x], xlist[idx_high_x]], [ylist[idx_low_y], ylist[idx_high_y]],\
+                                       [fieldx[idx_low_y, idx_high_x], fieldx[idx_high_y,idx_high_x], \
+                                        fieldx[idx_low_y,idx_low_x], fieldx[idx_high_y,idx_low_x]])
+            fieldy_targ = bilin_interp_4p(pt_x, pt_y, [xlist[idx_low_x], xlist[idx_high_x]], [ylist[idx_low_y], ylist[idx_high_y]],\
+                                       [fieldy[idx_low_y, idx_high_x], fieldy[idx_high_y,idx_high_x], \
+                                        fieldy[idx_low_y,idx_low_x], fieldy[idx_high_y,idx_low_x]])
+            # print(f'{fieldx_targ=}') # for debug
+            # print(f'{fieldy_targ=}') # for debug
+            magnitude = np.sqrt(fieldx_targ ** 2 + fieldy_targ ** 2)
+            ux = fieldx_targ/magnitude # x component of unit vector
+            uy = fieldy_targ/magnitude # y component of unit vector
+            pt_x = float(pt_x - step*ux[0])
+            pt_y = float(pt_y - step*uy[0])
+            if len(point_list_x_backw) > 5000: #TODO set as user param
+                break
+            if pt_x > x_lim[1] or pt_x < x_lim[0] or pt_y > y_lim[1] or pt_y < y_lim[0]:
+                break
+        return [point_list_x, point_list_y, point_list_x_backw, point_list_y_backw]
+
+    def calcfluxvectors(field2d, x_grid, y_grid, xpos, ypos, num_x_samples, num_y_samples, pt_x=0.75, pt_y=1.2, step=0.001):
+        # Compute the gradients of the temperature field
+        dTdy, dTdx = np.gradient(field2d, y_grid[1, 0] - y_grid[0, 0], x_grid[0, 1] - x_grid[0, 0])
+        qx = dTdx # Compute the heat flux vectors (assuming k = 1 for simplicity)
+        qy = dTdy  #TODO add lookup for k at any sample point
+        [point_list_x, point_list_y, point_list_x_backw, point_list_y_backw] = eulerstream(qx, qy, xpos, ypos, pt_x, pt_y, step)
+        # Resample Grid
+        x_resmp = np.linspace(xpos.min(), xpos.max(), num_x_samples)
+        y_resmp = np.linspace(ypos.min(), ypos.max(), num_y_samples)
+        x_grid_resmp, y_grid_resmp = np.meshgrid(x_resmp, y_resmp)
+        # use RegularGridInterpolator instead of interp2d due to deprecation
+        # Note needs to be y, then x. Also note x and y in brackets. ASK ME HOW I KNOW >:(
+        interpfunc_x = RegularGridInterpolator((ypos, xpos), qx, method='linear', bounds_error=False) 
+        interpfunc_y = RegularGridInterpolator((ypos, xpos), qy, method='linear', bounds_error=False) 
+        qx_resmp = compressfield(interpfunc_x((y_grid_resmp, x_grid_resmp)))
+        qy_resmp = compressfield(interpfunc_y((y_grid_resmp, x_grid_resmp)))
+        return x_grid_resmp, y_grid_resmp, qx_resmp, qy_resmp, point_list_x, point_list_y, point_list_x_backw, point_list_y_backw
+
+    x_grid_resmp, y_grid_resmp, qx_resmp, qy_resmp, point_list_x, point_list_y, point_list_x_backw, point_list_y_backw = \
+        calcfluxvectors(T, x_grid, y_grid, xpos, ypos, 16, 21, pt_x=0.25, pt_y=0.4, step=0.001)
+    fig, ax = plt.subplots(1,1)
+    # Plot the temperature field
+    plt.contourf(x_grid, y_grid, T, 20, cmap='hot')
+    plt.colorbar(label='Temperature')
+    # Plot the heat flux vectors
+    plt.quiver(x_grid_resmp, y_grid_resmp, qx_resmp, qy_resmp, linewidths=0.5, edgecolors='black', headlength=5, minlength=0, minshaft=0)
+    plt.plot(point_list_x, point_list_y, 'g')
+    plt.plot(point_list_x_backw, point_list_y_backw, 'b')
+    ax.axis('equal')
+    plt.xlim([min(xpos), max(xpos)])
+    plt.ylim([min(ypos), max(ypos)])
+    plt.xlabel('x')
+    plt.ylabel('y')
+    plt.title('Heat Flux Vectors')
+    return
+
+start_time = time.perf_counter()
+calc_fluxlines_and_vecs()
+end_time = time.perf_counter()
+print(f"Time taken fluxlines: {end_time - start_time:.12f} seconds")
+    
 
 def create_custom_colormap(num_colors=256):
     from matplotlib.colors import ListedColormap
@@ -2181,8 +2326,7 @@ def plot_nodes_BCs(LayerInstns, blockInstns, x_length, nodal_posn_x, nodal_posn_
             rectangles.append(rect)
         ax.add_collection(PatchCollection(rectangles, match_original=True))
         ax.set_xlim(0, x_max)
-        ax.set_ylim(0, sum([layer.th for layer in layers]))
-    
+        ax.set_ylim(0, sum([layer.th for layer in layers])) 
     def fillwcolor_rectangle_blocks(ax, blocks, x_length):
         rectangles = []
         for block in blocks:
@@ -2316,11 +2460,9 @@ def plot_nodes_BCs(LayerInstns, blockInstns, x_length, nodal_posn_x, nodal_posn_
             texts.append(ax.text(x+width/2, y+height/2, f'{flx_BC_name}={flx_val_const}W', ha='center', \
                                   va='center', fontsize=12, color='#420000',zorder=9, path_effects=pe))
         return
-
     # Calculate box line_thk as percent of x_lim and y_lim range
     x_lim_range = ax.get_xlim()[1] - ax.get_xlim()[0]
     line_thk = 0.0045 * x_lim_range  # Adjust based on your requirements
-    
     # Iterate over boundary condition node groups
     if BC_output['qbc_nodes']:
         current_group = [BC_output['qbc_nodes'][0]] # Initialize group with first node
@@ -2336,7 +2478,6 @@ def plot_nodes_BCs(LayerInstns, blockInstns, x_length, nodal_posn_x, nodal_posn_
             prev_count_numBC = count_numBC
         # Draw box for the last group of nodes
         draw_box_for_q_group(count_numBC, current_group, nd_list_Top, nd_list_Bot, nd_list_L, nd_list_R, ax, nodal_posn_x, nodal_posn_y, line_thk)
-    
     # Fix text overlapping
     if shouldadjusttext:
         # adjust_text(texts, autoalign='x', force_pull=(0.002, 0.1))
